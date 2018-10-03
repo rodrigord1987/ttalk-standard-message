@@ -4,6 +4,8 @@ var results;
 var foundorder;
 var foundpage;
 var foundpagesize;
+var hasgetcollectionendpoint;
+var thisisagetcollectionendpoint;
 
 var checkXtotvs = function (httpVerbInfo) {
     if (httpVerbInfo["x-totvs"]) {
@@ -38,16 +40,16 @@ var checkUseOfCommonsParams = function (parameter) {
     }
 };
 
-var checkIfCollectionHasAllNeededParams = function (parameter, httpVerbkey, pathkey) {
-    if (httpVerbkey == "get" && !pathkey.includes("{")) {
+var checkIfCollectionHasAllNeededParams = function (parameter, httpVerbkey, pathkey) { 
+    if (thisisagetcollectionendpoint) {
         if (parameter.$ref) {
-            if (parameter.$ref.includes("https://raw.githubusercontent.com/totvs/ttalk-standard-message/master/jsonschema/apis/types/totvsApiTypesBase.json#/parameters/Order")) {
+            if (parameter.$ref.includes("https://raw.githubusercontent.com/totvs/ttalk-standard-message") && parameter.$ref.includes("jsonschema/apis/types/totvsApiTypesBase.json#/parameters/Order")) {
                 foundorder = true;
-            }
-            if (parameter.$ref.includes("https://raw.githubusercontent.com/totvs/ttalk-standard-message/master/jsonschema/apis/types/totvsApiTypesBase.json#/parameters/Page")) {
+            }         
+            if (parameter.$ref.includes("https://raw.githubusercontent.com/totvs/ttalk-standard-message") && parameter.$ref.includes("jsonschema/apis/types/totvsApiTypesBase.json#/parameters/Page")) {
                 foundpage = true;
             }
-            if (parameter.$ref.includes("https://raw.githubusercontent.com/totvs/ttalk-standard-message/master/jsonschema/apis/types/totvsApiTypesBase.json#/parameters/PageSize")) {
+            if (parameter.$ref.includes("https://raw.githubusercontent.com/totvs/ttalk-standard-message") && parameter.$ref.includes("jsonschema/apis/types/totvsApiTypesBase.json#/parameters/PageSize")) {
                 foundpagesize = true;
             }
         }
@@ -56,15 +58,43 @@ var checkIfCollectionHasAllNeededParams = function (parameter, httpVerbkey, path
 
 var checkCommonErrorSchema = function (response, responseKey) {
     if (results.useErrorSchema != false && (responseKey >= 400 && responseKey <= 599)) {
-        results.useErrorSchema = response.content["application/json"].schema.$ref == "https://raw.githubusercontent.com/totvs/ttalk-standard-message/master/jsonschema/apis/types/totvsApiTypesBase.json#/definitions/ErrorModel";
+        var ref = response.content["application/json"].schema.$ref;
+        results.useErrorSchema = ref.includes("https://raw.githubusercontent.com/totvs/ttalk-standard-message/") && ref.includes("/jsonschema/apis/types/totvsApiTypesBase.json#/definitions/ErrorModel");
     }
 };
 
+var checkHttpVerbInUrl = function (pathkey) {
+    if (results.useHttpVerbInEndpointUrl != true) {
+        results.useHttpVerbInEndpointUrl = (pathkey.includes("get") ||
+            pathkey.includes("put") ||
+            pathkey.includes("post") ||
+            pathkey.includes("delete"))
+    }
+    results.useHttpVerbInEndpointUrl;
+}
+
+var checkIfRequestIsSettedToExternalSchema = function (request) {
+
+}
+
+var checkIfResponseIsSettedToExternalSchema = function (response) {
+    if (response.content["application/json"].schema) {
+        var ref = response.content["application/json"].schema.$ref;
+        if (!ref) ref = response.content["application/json"].schema.items.$ref;
+        if (results.useResponseExternalSchema != false && ref) {
+            results.useResponseExternalSchema = !ref.includes("#/components/");
+        }
+    }
+}
+
+//TODO: Pegar schemas de request também. Só adicionar se o schema (sem levar em consideração o que vem depois do #/definition) for diferente
 var addSchema = function (response) {
-    var ref = response.content["application/json"].schema.$ref;
-    if (!ref) ref = response.content["application/json"].schema.items.$ref;
-    if (ref) results.schemaUrlList.push(ref.slice(0, ref.indexOf("#")));
-    else results.errorAddingSchema = true;
+    if (response.content["application/json"].schema) {
+        var ref = response.content["application/json"].schema.$ref;
+        if (!ref) ref = response.content["application/json"].schema.items.$ref;
+        if (ref) results.schemaUrlList.push(ref.slice(0, ref.indexOf("#")));
+        else results.errorAddingSchema = true;
+    }
 };
 
 var runThroughResponses = function (responses) {
@@ -72,6 +102,7 @@ var runThroughResponses = function (responses) {
         var response = responses[responseKey];
         if (response.content) {
             checkCommonErrorSchema(response, responseKey);
+            checkIfResponseIsSettedToExternalSchema(response);
             addSchema(response);
         }
     }
@@ -85,27 +116,48 @@ var runThroughParams = function (parameters, httpVerbkey, pathkey) {
     }
 };
 
-exports.clear = function() {
-    results = {
-        schemaUrlList: []
-    };
+var clearCollectionParamsValidation = function() {
     foundorder = false;
     foundpage = false;
     foundpagesize = false;
+}
+
+exports.clear = function () {
+    results = {
+        schemaUrlList: []
+    };
+    clearCollectionParamsValidation();
+    hasgetcollectionendpoint = undefined;
+    thisisagetcollectionendpoint = undefined;
 };
 
 exports.runThroughPaths = function name(parsedOpenAPI) {
     for (var pathkey in parsedOpenAPI.paths) {
+        checkHttpVerbInUrl(pathkey);
         for (var httpVerbkey in parsedOpenAPI.paths[pathkey]) {
+           //TODO: EXTRACT METHOD            
+            if (httpVerbkey == "get" && !pathkey.includes("{")) {
+                if(hasgetcollectionendpoint) { //Will be hit if there is more then one get collection endpoint
+                    clearCollectionParamsValidation();
+                }
+                hasgetcollectionendpoint = true;
+                thisisagetcollectionendpoint = true;
+            } else {
+                thisisagetcollectionendpoint = false;
+            }
+            /////
+
             var httpVerbInfo = parsedOpenAPI.paths[pathkey][httpVerbkey];
             checkXtotvs(httpVerbInfo);
-            var parameters = parsedOpenAPI.paths[pathkey][httpVerbkey].parameters;
+            var parameters = parsedOpenAPI.paths[pathkey][httpVerbkey].parameters;         
             runThroughParams(parameters, httpVerbkey, pathkey);
             var responses = httpVerbInfo.responses;
-            runThroughResponses(responses);
+            runThroughResponses(responses);            
         }
     }
-    if (foundorder && foundpage && foundpagesize && results.useAllRequiredParamsForCollection != false)
+    if (!hasgetcollectionendpoint)
+        results.useAllRequiredParamsForCollection = true;
+    else if (foundorder && foundpage && foundpagesize && results.useAllRequiredParamsForCollection != false)
         results.useAllRequiredParamsForCollection = true;
     return results;
 };
